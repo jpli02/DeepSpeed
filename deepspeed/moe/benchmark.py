@@ -25,7 +25,6 @@ from torch import Tensor
 from torch.nn import Module
 import torch.nn.functional as F
 from deepspeed.utils import groups
-from .mappings import drop_tokens, gather_tokens
 import argparse
 import time
 
@@ -301,8 +300,15 @@ def top2gating(logits: Tensor,
 
     # Create a mask for 1st's expert per token
     indices1_s = torch.argmax(gates, dim=1)
+    print(f"gates shape : {gates.shape}")
+    print(f"indices1_s shape : {indices1_s.shape}")
     num_experts = int(gates.shape[1])
+    print(f"num_experts : {num_experts}")
     mask1 = F.one_hot(indices1_s, num_classes=num_experts)
+    print(f"mask1 shape : {mask1.shape}")
+    
+
+
 
     if top2_2nd_expert_sampling:
         # Create a mask for 2nd's expert per token using Gumbel-max trick
@@ -464,7 +470,7 @@ class TopKGate(Module):
             number of experts in model
     """
 
-    wg: torch.nn.Linear
+    # wg: torch.nn.Linear
 
     def __init__(self,
                  model_dim: int,
@@ -480,7 +486,7 @@ class TopKGate(Module):
                  top2_2nd_expert_sampling: bool = True) -> None:
         super().__init__()
 
-        self.wg = torch.nn.Linear(model_dim, num_experts, bias=False)
+        # self.wg = torch.nn.Linear(model_dim, num_experts, bias=False)
         self.ep_group = ep_group
         self.k = k
         self.capacity_factor = capacity_factor
@@ -499,25 +505,24 @@ class TopKGate(Module):
         self.ep_group = ep_group
 
     def forward(self,
-                input: torch.Tensor,
-                used_token: torch.Tensor = None,
+                logits: torch.Tensor,
                 use_tutel: bool = False) -> Tuple[Tensor, Tensor, Tensor]:  # type: ignore
 
-        if self.wall_clock_breakdown:
-            self.timers(TOPK_GATE_TIMER).start()
+        # if self.wall_clock_breakdown:
+        #     self.timers(TOPK_GATE_TIMER).start()
 
-        input_fp32 = input.float()
-        # input jittering
-        if self.noisy_gate_policy == 'Jitter' and self.training:
-            input_fp32 = multiplicative_jitter(input_fp32, device=input.device)
-        logits = torch.nn.functional.linear(input_fp32, weight=self.wg.weight.float(), bias=None)
+        # input_fp32 = input.float()
+        # # input jittering
+        # if self.noisy_gate_policy == 'Jitter' and self.training:
+        #     input_fp32 = multiplicative_jitter(input_fp32, device=input.device)
+        # logits = torch.nn.functional.linear(input_fp32, weight=self.wg.weight.float(), bias=None)
 
-        if self.k == 1:
-            gate_output = top1gating(logits, self.capacity_factor if self.training else self.eval_capacity_factor,
-                                     self.min_capacity, used_token, self.noisy_gate_policy if self.training else None,
-                                     self.drop_tokens, self.use_rts, self.ep_group, use_tutel)
+        # if self.k == 1:
+        #     gate_output = top1gating(logits, self.capacity_factor if self.training else self.eval_capacity_factor,
+        #                              self.min_capacity, used_token, self.noisy_gate_policy if self.training else None,
+        #                              self.drop_tokens, self.use_rts, self.ep_group, use_tutel)
 
-        elif self.k == 2:
+        if self.k == 2:
             gate_output = top2gating(logits, self.capacity_factor if self.training else self.eval_capacity_factor,
                                      self.min_capacity, self.drop_tokens, self.ep_group, self.top2_2nd_expert_sampling)
         else:
@@ -525,163 +530,19 @@ class TopKGate(Module):
                                      self.capacity_factor if self.training else self.eval_capacity_factor,
                                      self.min_capacity, self.drop_tokens, self.ep_group)
 
-        if self.wall_clock_breakdown:
-            self.timers(TOPK_GATE_TIMER).stop()
-            self.gate_time = self.timers(TOPK_GATE_TIMER).elapsed(reset=False)
+        # if self.wall_clock_breakdown:
+        #     self.timers(TOPK_GATE_TIMER).stop()
+        #     self.gate_time = self.timers(TOPK_GATE_TIMER).elapsed(reset=False)
 
         return gate_output
 
 
-class MOELayer(Base):
-    """MOELayer module which implements MixtureOfExperts as described in Gshard_.
-    ::
-
-        gate = TopKGate(model_dim, num_experts)
-        moe = MOELayer(gate, expert)
-        output = moe(input)
-        l_aux = moe.l_aux
-
-    .. Gshard_: https://arxiv.org/pdf/2006.16668.pdf
-
-    Args:
-        gate (torch.nn.Module):
-            gate network
-        expert (torch.nn.Module):
-            expert network
-    """
-
-    def __init__(self,
-                 gate: Module,
-                 experts: Module,
-                 ep_group_name,
-                 ep_size,
-                 num_local_experts: int,
-                 use_tutel: bool = False) -> None:
-        super().__init__()
-        self.gate = gate
-        self.experts = experts
-        self.ep_group = None
-        self.ep_size = ep_size
-        self.ep_group_name = ep_group_name
-        self.num_local_experts = num_local_experts
-        self.time_falltoall = 0.0
-        self.time_salltoall = 0.0
-        self.time_moe = 0.0
-        self.timers = SynchronizedWallClockTimer()
-        self.wall_clock_breakdown = False
-
-        self.use_tutel = use_tutel and TUTEL_INSTALLED and gate.k == 1
-
-        if self.use_tutel:
-            logger.info('Using Tutel optimizations.')
-        elif use_tutel and not TUTEL_INSTALLED:
-            logger.warning("Tutel optimization requested but not installed. "
-                           "Proceeding without Tutel.")
-        elif use_tutel and TUTEL_INSTALLED and gate.k != 1:
-            logger.warning("To enable Tutel optimization, use top-1 instead of top-2 gate. "
-                           "Proceeding without Tutel.")
-
-    def _set_ep_group(self, ep_group):
-        self.ep_group = ep_group
-        self.gate._set_ep_group(ep_group)
-
-    def forward(self, *input: Tensor, **kwargs: Any) -> Tensor:
-
-        if self.wall_clock_breakdown:
-            self.timers(MOE_TIMER).start()
-
-        # Implement Algorithm 2 from GShard paper.
-        d_model = input[0].shape[-1]
-
-        # Initial implementation -> Reshape into S tokens by dropping sequence dimension.
-        # Reshape into G groups so that each group can distribute tokens equally
-        # group_size = kwargs['group_size'] if 'group_size' in kwargs.keys() else 1
-        reshaped_input = input[0].reshape(-1, d_model)
-
-        if self.use_tutel:
-            self.l_aux, C, E, indices_, locations_, gates_, self.exp_counts = self.gate(reshaped_input, input[1], True)
-            S, M = reshaped_input.size(0), reshaped_input.size(1)
-
-            if not hasattr(self, '_tutel_dispatcher'):
-                self._tutel_dispatcher = tutel_moe.fast_dispatcher(E, C, M, dispatch_dtype=reshaped_input.dtype)
-            self._tutel_dispatcher.update(indices_, locations_, gates_, capacity=C)
-            dispatched_input = self._tutel_dispatcher.encode(reshaped_input)
-        else:
-            self.l_aux, combine_weights, dispatch_mask, self.exp_counts = self.gate(reshaped_input, input[1])
-            dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
-
-        if self.wall_clock_breakdown:
-            self.timers(FIRST_ALLTOALL_TIMER).start()
-
-        tensor_model_world_size = bwc_tensor_model_parallel_world_size(groups.mpu)
-        if tensor_model_world_size > 1:
-            # If the non-expert is tensor-parallel,
-            # Whether expert is tensor-parallel or not , it will create
-            # duplicate tokens on the tensor-parallel ranks.
-            # drop duplicate tokens also doubles up as a communication
-            # optimization as we are reducing the all-to-all communication volume.
-            # 1: for not tensor-parallel expert,drop duplicate tokens to ensure
-            # both correctness and reduce all-to-all communication.
-            # 2: for tensor-parallel expert,drop duplicate tokens to reduce all-to-all
-            # communication volume,before expert execution, it is necessary to perform
-            # an allgather to ensure correctness,
-            dispatched_input = drop_tokens(dispatched_input, dim=1)
-
-        dispatched_input = _AllToAll.apply(self.ep_group, dispatched_input)
-
-        if self.wall_clock_breakdown:
-            self.timers(FIRST_ALLTOALL_TIMER).stop()
-            self.time_falltoall = self.timers(FIRST_ALLTOALL_TIMER).elapsed(reset=False)
-
-        if tensor_model_world_size > 1 and groups._get_expert_model_parallel_world_size() > 1:
-            # if both expert and non-expert are tensor-parallel
-            # the dropped duplicate tokens need to be gathered on each
-            # tensor parallel rank again to ensure correctness
-            dispatched_input = gather_tokens(dispatched_input, dim=1)
-
-        # Re-shape after all-to-all: ecm -> gecm
-        dispatched_input = dispatched_input.reshape(self.ep_size, self.num_local_experts, -1, d_model)
-        expert_output = self.experts(dispatched_input)
-        # Re-shape before drop_tokens: gecm -> ecm
-        expert_output = expert_output.reshape(self.ep_size * self.num_local_experts, -1, d_model)
-        if tensor_model_world_size > 1 and groups._get_expert_model_parallel_world_size() > 1:
-            # if both expert and non-expert are tensor-parallel
-            # drop duplicate tokens to ensure both correctness
-            # and reduce all-to-all communication.
-            expert_output = drop_tokens(expert_output, dim=1)
-
-        if self.wall_clock_breakdown:
-            self.timers(SECOND_ALLTOALL_TIMER).start()
-
-        expert_output = _AllToAll.apply(self.ep_group, expert_output)
-
-        if self.wall_clock_breakdown:
-            self.timers(SECOND_ALLTOALL_TIMER).stop()
-            self.time_salltoall = self.timers(SECOND_ALLTOALL_TIMER).elapsed(reset=False)
-
-        if tensor_model_world_size > 1:
-            # the dropped duplicate tokens need to be gathered on each
-            # tensor parallel rank again for the tensor-parallel
-            # non-expert of the next layer.
-            expert_output = gather_tokens(expert_output, dim=1)
-
-        if self.use_tutel:
-            combined_output = self._tutel_dispatcher.decode(expert_output.view(E * C, M))
-        else:
-            combined_output = einsum("sec,ecm->sm", combine_weights.type_as(input[0]), expert_output)
-
-        a = combined_output.reshape(input[0].shape)
-
-        if self.wall_clock_breakdown:
-            self.timers(MOE_TIMER).stop()
-            self.time_moe = self.timers(MOE_TIMER).elapsed(reset=False)
-
-        return a
 
 def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
     # input: [sl, bs, hs]
-    input = torch.rand((seq_len, bs, hid_dim), device='cuda')
+    input = torch.rand((seq_len, hid_dim), device='cuda')
     gate = TopKGate(hid_dim, exp_num, top_k)
+    logits = torch.rand((seq_len, exp_num), device='cuda')
 
     # Implement Algorithm 2 from GShard paper.
     d_model = input[0].shape[-1]
@@ -693,11 +554,10 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
     
     # gpu warm up
     for _ in range(10):
-        l_aux, C, E, indices_, locations_, gates_, exp_counts = gate(reshaped_input, input[1], True)
-        S, M = reshaped_input.size(0), reshaped_input.size(1)
-        _tutel_dispatcher = tutel_moe.fast_dispatcher(E, C, M, dispatch_dtype=reshaped_input.dtype)
-        _tutel_dispatcher.update(indices_, locations_, gates_, capacity=C)
-        dispatched_input = _tutel_dispatcher.encode(reshaped_input)
+        for _ in range(10): 
+            l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
+            dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
+        
         
     if use_tutel:
         # teset tutel: mem and speed
@@ -707,7 +567,7 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
         
         start_time = time.time()
         for _ in range(10):
-            l_aux, C, E, indices_, locations_, gates_, exp_counts = gate(reshaped_input, input[1], True)
+            l_aux, C, E, indices_, locations_, gates_, exp_counts = gate(logits, True)
             S, M = reshaped_input.size(0), reshaped_input.size(1)
             _tutel_dispatcher = tutel_moe.fast_dispatcher(E, C, M, dispatch_dtype=reshaped_input.dtype)
             _tutel_dispatcher.update(indices_, locations_, gates_, capacity=C)
@@ -733,7 +593,7 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
         
         start_time = time.time()
         for _ in range(10): 
-            l_aux, combine_weights, dispatch_mask, exp_counts = gate(reshaped_input, input[1])
+            l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
             dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
         
         end_time = time.time()
@@ -749,7 +609,6 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
         print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
         print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
         print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
-    
  
 if __name__ == "__main__":
     # Parse command-line arguments
@@ -759,7 +618,7 @@ if __name__ == "__main__":
     parser.add_argument("--bs", type=int, required=True, help="Batch size")
     parser.add_argument("--s", type=int, required=True, help="Sequence length")
     parser.add_argument("--hid_dim", type=int, required=True, help="Hidden dimension")
-    parser.add_argument("--use_tutel", type=bool, required=True, help="Hidden dimension")
+    parser.add_argument("--use_tutel", type=bool, required=False, help="Hidden dimension")
     
     args = parser.parse_args()
 
