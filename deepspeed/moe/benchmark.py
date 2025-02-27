@@ -300,12 +300,12 @@ def top2gating(logits: Tensor,
 
     # Create a mask for 1st's expert per token
     indices1_s = torch.argmax(gates, dim=1)
-    print(f"gates shape : {gates.shape}")
-    print(f"indices1_s shape : {indices1_s.shape}")
+    # print(f"gates shape : {gates.shape}")
+    # print(f"indices1_s shape : {indices1_s.shape}")
     num_experts = int(gates.shape[1])
-    print(f"num_experts : {num_experts}")
+    # print(f"num_experts : {num_experts}")
     mask1 = F.one_hot(indices1_s, num_classes=num_experts)
-    print(f"mask1 shape : {mask1.shape}")
+    # print(f"mask1 shape : {mask1.shape}")
     
 
 
