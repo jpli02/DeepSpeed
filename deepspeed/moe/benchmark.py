@@ -19,7 +19,7 @@ from deepspeed.utils.timer import SynchronizedWallClockTimer
 from deepspeed.utils import logger
 from deepspeed.utils.bwc import bwc_tensor_model_parallel_world_size
 from typing import Callable, Dict, TYPE_CHECKING, Any, Optional, Tuple, Union
-from .experts import Experts
+from moe.experts import Experts
 
 
 import torch
