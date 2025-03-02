@@ -613,7 +613,7 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
         
     # test for expert layer
     expert_mlp = torch.nn.Sequential(torch.nn.Linear(hid_dim, hid_dim), torch.nn.Linear(hid_dim, hid_dim))
-    experts_layer = Experts(expert_mlp, exp_num)
+    experts_layer = Experts(expert_mlp, exp_num).to(dispatched_input.device)
     for _ in range(10):
         expert_output = experts_layer(dispatched_input)
 
