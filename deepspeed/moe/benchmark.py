@@ -612,31 +612,31 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
         print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
         
     # test for expert layer
-    expert_mlp = torch.nn.Sequential(torch.nn.Linear(hid_dim, hid_dim), torch.nn.Linear(hid_dim, hid_dim))
-    experts_layer = Experts(expert_mlp, exp_num).to(dispatched_input.device)
-    for _ in range(10):
-        expert_output = experts_layer(dispatched_input)
+    # expert_mlp = torch.nn.Sequential(torch.nn.Linear(hid_dim, hid_dim), torch.nn.Linear(hid_dim, hid_dim))
+    # experts_layer = Experts(expert_mlp, exp_num).to(dispatched_input.device)
+    # for _ in range(10):
+    #     expert_output = experts_layer(dispatched_input)
 
-    torch.cuda.synchronize()  # Ensure all CUDA operations are finished
-    torch.cuda.reset_peak_memory_stats()
-    start_memory = torch.cuda.memory_allocated()
-    start_time = time.time()
+    # torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+    # torch.cuda.reset_peak_memory_stats()
+    # start_memory = torch.cuda.memory_allocated()
+    # start_time = time.time()
     
-    for _ in range(10): 
-        expert_output = experts_layer(dispatched_input)
+    # for _ in range(10): 
+    #     expert_output = experts_layer(dispatched_input)
         
-    end_time = time.time()
-    torch.cuda.synchronize()
-    end_memory = torch.cuda.memory_allocated()
-    peak_memory = torch.cuda.max_memory_allocated()
+    # end_time = time.time()
+    # torch.cuda.synchronize()
+    # end_memory = torch.cuda.memory_allocated()
+    # peak_memory = torch.cuda.max_memory_allocated()
     
-    # summary
-    memory_used = end_memory - start_memory
-    peak_memory_used = peak_memory - start_memory
-    print("---------- benchmarking deepspeed gshard's expert mlp layer ----------")
-    print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
-    print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
-    print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
+    # # summary
+    # memory_used = end_memory - start_memory
+    # peak_memory_used = peak_memory - start_memory
+    # print("---------- benchmarking deepspeed gshard's expert mlp layer ----------")
+    # print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
+    # print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
+    # print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
     
  
 if __name__ == "__main__":
