@@ -540,7 +540,7 @@ class TopKGate(Module):
 
 
 
-def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel):
+def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel=False):
     # input: [sl, bs, hs]
     input = torch.rand((seq_len, hid_dim), device='cuda')
     gate = TopKGate(hid_dim, exp_num, top_k)
