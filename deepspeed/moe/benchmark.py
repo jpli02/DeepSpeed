@@ -543,7 +543,6 @@ class TopKGate(Module):
 def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel=False):
     # input: [sl, bs, hs]
     input = torch.rand((seq_len, hid_dim), device='cuda')
-    gate = TopKGate(hid_dim, exp_num, top_k)
     logits = torch.rand((seq_len, exp_num), device='cuda')
 
     # Implement Algorithm 2 from GShard paper.
@@ -557,59 +556,33 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel=False):
     # gpu warm up
     for _ in range(10):
         for _ in range(10): 
-            l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
+            l_aux, combine_weights, dispatch_mask, exp_counts = topkgating(logits, top_k, 1, 8)
             dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
         
         
-    if use_tutel:
-        # teset tutel: mem and speed
-        torch.cuda.synchronize()  # Ensure all CUDA operations are finished
-        torch.cuda.reset_peak_memory_stats()
-        start_memory = torch.cuda.memory_allocated()
-        
-        start_time = time.time()
-        for _ in range(10):
-            l_aux, C, E, indices_, locations_, gates_, exp_counts = gate(logits, True)
-            S, M = reshaped_input.size(0), reshaped_input.size(1)
-            _tutel_dispatcher = tutel_moe.fast_dispatcher(E, C, M, dispatch_dtype=reshaped_input.dtype)
-            _tutel_dispatcher.update(indices_, locations_, gates_, capacity=C)
-            dispatched_input = _tutel_dispatcher.encode(reshaped_input)
-        end_time = time.time()
+
+    # test gshard: huge mem use as baseline
+    torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+    torch.cuda.reset_peak_memory_stats()
+    start_memory = torch.cuda.memory_allocated()
+    start_time = time.time()
     
-        torch.cuda.synchronize()
-        end_memory = torch.cuda.memory_allocated()
-        peak_memory = torch.cuda.max_memory_allocated()
-        
-        # summary
-        memory_used = end_memory - start_memory
-        peak_memory_used = peak_memory - start_memory
-        print("---------- benchmarking tutel's gating kernel ----------")
-        print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
-        print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
-        print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
-    else:
-        # test gshard: huge mem use as baseline
-        torch.cuda.synchronize()  # Ensure all CUDA operations are finished
-        torch.cuda.reset_peak_memory_stats()
-        start_memory = torch.cuda.memory_allocated()
-        start_time = time.time()
-        
-        for _ in range(10): 
-            l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
-            dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
-        
-        end_time = time.time()
-        torch.cuda.synchronize()
-        end_memory = torch.cuda.memory_allocated()
-        peak_memory = torch.cuda.max_memory_allocated()
-        
-        # summary
-        memory_used = end_memory - start_memory
-        peak_memory_used = peak_memory - start_memory
-        print("---------- benchmarking deepspeed gshard's gating kernel ----------")
-        print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
-        print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
-        print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
+    for _ in range(10): 
+        l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
+        dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
+    
+    end_time = time.time()
+    torch.cuda.synchronize()
+    end_memory = torch.cuda.memory_allocated()
+    peak_memory = torch.cuda.max_memory_allocated()
+    
+    # summary
+    memory_used = end_memory - start_memory
+    peak_memory_used = peak_memory - start_memory
+    print("---------- benchmarking deepspeed gshard's gating kernel ----------")
+    print(f"Execution Time: {((end_time - start_time) / 10.0) * 1000:.6f} ms")
+    print(f"Memory Used: {memory_used / 1024 ** 2:.2f} MB")
+    print(f"Peak Memory Used: {peak_memory_used / 1024 ** 2:.2f} MB")
         
     # test for expert layer
     # expert_mlp = torch.nn.Sequential(torch.nn.Linear(hid_dim, hid_dim), torch.nn.Linear(hid_dim, hid_dim))
