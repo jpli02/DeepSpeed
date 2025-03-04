@@ -568,7 +568,7 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel=False):
     start_time = time.time()
     
     for _ in range(10): 
-        l_aux, combine_weights, dispatch_mask, exp_counts = gate(logits)
+        l_aux, combine_weights, dispatch_mask, exp_counts = topkgating(logits, top_k, 1, 8)
         dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
     
     end_time = time.time()
