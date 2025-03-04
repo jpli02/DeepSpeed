@@ -570,7 +570,7 @@ def run_deepspeed_all(top_k, exp_num, bs, seq_len, hid_dim, use_tutel=False):
     for _ in range(10): 
         l_aux, combine_weights, dispatch_mask, exp_counts = topkgating(logits, top_k, 1, 8)
         dispatched_input = einsum("sec,sm->ecm", dispatch_mask.type_as(input[0]), reshaped_input)
-        print(f"k is {top_k}, dispatched_mask shape: {dispatch_mask}, dispatched input shape: {dispatched_input.shape}")
+        print(f"k is {top_k}, dispatched_mask shape: {dispatch_mask.shape}, dispatched input shape: {dispatched_input.shape}")
     
     end_time = time.time()
     torch.cuda.synchronize()
